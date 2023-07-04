@@ -1,0 +1,560 @@
+---
+title: "Multiparticle Random Walk Rendering - 100x100"
+author: "Christian Kirk Almendares"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE, echo=FALSE, warning=FALSE}
+library(ggplot2)
+library(gganimate)
+library(plotly)
+library(magick)
+library(viridisLite)
+library(gsignal)
+library(reshape)
+library(pracma)
+library(dplyr)
+library(rgl)
+library(plot3D)
+# library(numDeriv)
+# library(Deriv)
+```
+
+The first step is to have a system tensor generated beforehand. This may be either be pre-made or randomly generated. To investigate interesting behaviors, we are interested in pre-made system tensors.
+
+```{r}
+d = 2
+dimnames = c()
+for (i in 1:d) {
+  dimnames[i] = paste0("X", as.character(i))
+}
+dims = c(100,100)
+N = prod(dims)
+
+nsims = 100
+
+# X <- array(0, dim = c(dims))
+# X[1:50,] = 1
+
+X <- rbinom(N, 1, .5)
+X <- array(X, dim = c(dims))
+
+X.melted = melt(X)
+plt = ggplot(X.melted, aes(x=X1, y=X2, fill=value)) + geom_tile() + coord_fixed() + scale_fill_viridis_b()
+plt
+```
+
+The next step is to have a transition function. For multiparticle random walks, we desire the property that particles and antiparticles are treated exactly the same. A single particle in an infinite antiparticle system should behave like a random walk Likewise, a single antiparticle in an infinite particle system should behave exactly the same. Our transition function \(q\) should be as optimized as possible so as to avoid computational slowdown, and it should automatically process the system tensor regardless of the number of dimensions.
+
+
+The best way to process the system tensor is to melt it into a matrix. need a total of \(N\) entries for the melted system. By melting the system so that each cell has a unique identifier by a position vector. First, we have actual value or phase of the system, \(\phi(x_1, x_2,...,x_d\). Second, we have the position vector \(x = x_1,...,x_d\). Third, we can attach the gradient for each block \(\nabla \phi = \frac{\partial \phi}{\partial x_1},..., \frac{\partial \phi}{\partial x_1}\). Last, we have each time step \(t\) to account for a total \(d^2 + 2\) tensor.
+
+When actually processing each timestep, we would prefer to work with the absolute gradient \(|\nabla(\phi)|\) and attach a weight variable \(\rho = \sum_{i=1+^d \frac{\partial \phi}{\partial x_i}\). For our transition function \(q\), we sample positions according to their weight \(\rho\) regardless of their value.
+
+Sampling in R with 0 probability weight sometimes samples switches with probability 0 because it is *the smallest positive number that is greater than 0*. This computational 0 problem is best avoided by using a list of blocks with potential switches, sampling uniquely numbered positions, add that uniquely numbered position to a collapsed switch list, disabling adjacent switches from the potential switch list, and continuing asychronous updates until the all potential switches in this timestep are gone. This list of collapsed switches is resolved by using the negation operator since we are using the set \(\{0,1\}\) to represent each position.
+
+An alternative way is to "know" which switches occurred by keeping track of the unique starting position. This allows us to visualize exactly which switches occured in a given animation. We only need to use the initial starting position's label as a separate column to show the block evolving throughout time, although we use the current position's label to perform the actual processing. It helps to remember the value/phase of the block as its "color" in an animation. Note that keeping track of starting transitions means switching labels, not merely inverting blocks.
+
+The simplest way to store the system tensor is using
+\[\phi, x_1,...,x_d, t\]
+where t is each timestep in the system. All switches are stored anonymously. It can be compressed by folding its shape as a unidimensional binary vector with metadata on how to unfold it. It can also be further compressed by storing the data as a Fourier series for lossless compression.
+
+The version of the system tensor used for processing is using
+\[\phi, x_1,...,x_d, \frac{\partial \phi}{\partial x_1},...,\frac{\partial \phi}{\partial x_d}, w_t, t\]
+and we use an external reference for current position. From here, we can extract
+
+The complex version that keeps track of all positions and switches over time is given by
+\(\p_0, \p_t, \phi, x_1,...,x_d, \frac{\partial \phi}{\partial x_1},...,\frac{\partial \phi}{\partial x_d}, w_t, t\)
+Switches are identifiable by keeping track of the starting label \(p_0\) over time.
+
+
+```{r}
+# Melt System 
+"Melt System performs the first time prep of a system tensor. It makes sure that
+the steps necessary to carry out operations are prepared properly.
+
+If you already have a melted system, cast it first then remelt it.
+"
+
+
+melt.system <- function(X, timestep = 0) {
+  dims = dim(X); d = length(dims)
+  dimnames <<- c(); derivnames <<- c()
+  for (i in 1:d) {
+  dimnames[i] <<- paste0("X", as.character(i))
+  derivnames[i] <<- paste0("dX", as.character(i))
+  }
+
+  X.melt = melt(X)
+  
+  X.names = c("index", "phi", dimnames, derivnames, "w", "t")
+  X.detail <- matrix(NA, nrow = dim(X.melt)[1], ncol = 2*d+4)
+  
+  subset(X.melt, select=-c(value))
+  
+  colnames(X.detail) <- X.names
+  
+  X.detail[,"phi"] = as.matrix(subset(X.melt, select=c(value)))
+  X.detail[, dimnames] = as.matrix(subset(X.melt, select=-c(value)))
+  X.detail[,"t"] = timestep
+  X.detail[,"index"] = 1:dim(X.melt)[1]
+  
+  return(X.detail)
+}
+
+X.det <- melt.system(X)
+
+# Modulus Indexer
+"This simple function performs the modulus operation for a number m"
+z <- function(x, m) {
+  return((x-1)%%m+1)
+}
+
+# Prep Gradient Permutation
+"Preps gradient permutations. To increase coding efficiency, we ensure that the 
+way that we reference indices for calculating derivatives is efficient in the
+future.
+
+This function only needs to be used once at time t=0, and it does not need to be
+used in successive timesteps."
+prep.Delta <- function(X.melt) {
+  permutes <- matrix(NA, nrow = dim(X.melt)[1], ncol=d)
+  for(i in 1:d){
+    which.deriv = rep(0, d); which.deriv[i] = 1
+    
+    X.temp = X.melt[,c("index", dimnames)]
+    
+    X.temp[, dimnames] = t(z(t(X.temp[, dimnames]) - which.deriv, dims))
+    X.temp = as.data.frame(X.temp)
+    X.temp = X.temp %>% arrange(across(starts_with(rev(dimnames))))
+    
+    permutes[,i] = X.temp$index
+  }
+  colnames(permutes) <- derivnames
+  
+  return(permutes)
+}
+
+permutes = prep.Delta(X.det)
+
+# Forward Difference Delta
+"The forward difference function. It calculates the gradient for a melted system
+matrix in order to perform calculations. More specifically, it attaches the 
+first-order forward-difference to each cell in d-dimensions. Note that you must
+use the Prep Gradient Permutation function before using Delta.
+
+
+Delta can be used to find the first-order forward-difference of any system, not 
+simply this simulation. Unfortunately, using it again will not produce a second-
+order central-difference.
+
+Strangely enough, multidimensional forward differences methods are supported for
+functions but not objects. This is why we needed to code it ourselves."
+
+Delta <- function(X.melt, permutes) {
+  for(i in 1:d){
+    X.melt[,derivnames] = X.melt[permutes,"phi"] - X.melt[,"phi"]
+  }
+  X
+  return(X.melt)
+}
+
+X.det = Delta(X.det, permutes)
+
+# Initial Weight Function
+"Whereas the Delta function is more of a generally useful function, the initial
+weight function preps our tensor for our transition function. Our transition 
+function is a function of the derivatives, so it might be considered a partial 
+differential equation.
+
+It also sets the replaces the derivatives with the absolute derivative, so it is 
+easier to sample from and sum."
+
+Weight <- function(X.melt) {
+  X.melt[,derivnames] = abs(X.melt[,derivnames])
+  X.melt[,"w"] = rowSums(X.melt[,derivnames])
+  
+  return(X.melt)
+}
+
+X.det = Weight(X.det)
+
+# Initial Root Function
+"The root function is a rather strange one. The root function says that no 
+switches occur on blocks in this set. This is important if we are simply adding 
+a boundary wall or otherwise wish to coerce blocks to be a particular phase 
+without exchange. 
+
+It only takes a melted logical as its input. 
+It disables all ingoing and outgoing switches to rooted blocks."
+Root <- function(X.melt) {
+  
+}
+
+# Wall Function
+"This function identifies the walls of a melted system tensor. Input it into the 
+Root function, and you have bounding walls. This will disable the forward 
+switches of blocks on the the last row, column, isle, etc.
+
+Instead of a system that loops like Pac-Man , the walls restrict movement.
+
+Since Wall() also calls Weight, you can use it instead at each Weight step."
+Wall <- function(X.melt) {
+  ends = t(abs(t(X.melt[,dimnames])==dims))
+  
+  X.melt[,derivnames] = X.melt[,derivnames]*!ends
+  
+  X.melt = Weight(X.melt)
+  return(X.melt)
+}
+
+X.det = Wall(X.det)
+
+# Sample Potential Switch
+"The sample switch function selects a block based on the sum of outgoing weights 
+to the block. By sampling the block, it returns the indices of the two blocks 
+that are being switched. This is functionally the same as sampling the switches 
+instead of the blocks.
+
+Sampling switches gives us the ordered pair of switches if we wish to keep track 
+of them for visualization.
+
+This function requires melted system tensor that was initially weighted. It does 
+not by itself remove selected blocks from the melted system tensor."
+sample.switch <- function(X.melt, potential.switches, permutes) {
+  blocks = potential.switches
+  weights = X.melt[,"w"]
+  if(length(blocks)>1){
+    which.block.a = sample(x = blocks, size = 1, prob = weights[blocks])
+  }
+  if(length(blocks)==1){
+    which.block.a=blocks
+  }
+  
+  block.weight = X.melt[which.block.a,"w"]
+  
+  
+  if(block.weight==1){
+    which.deriv.a = X.melt[which.block.a, derivnames]==1
+    which.block.b = permutes[which.block.a, which.deriv.a]
+  }
+  if(block.weight>1){
+    which.deriv.a = X.melt[which.block.a, derivnames]==1
+    valid.derivs = derivnames[which.deriv.a]
+    which.deriv.a = sample(valid.derivs, 1)
+    
+    which.block.b = permutes[which.block.a, which.deriv.a]
+  }
+  to.switch = c(which.block.a, which.block.b)
+  
+  return(to.switch)
+}
+
+# Remove Blocks
+"This function requires the indices of switched blocks in order to remove all 
+ingoing and outgoing switches. It does this by fully disabling all forward 
+derivatives on each block and partially disabling the d blocks before it that 
+correspond to the d dimensions.
+
+This function can also be used to fix walls into the system if you wished to do 
+simple stochastic fluid simulation with very few blocks."
+remove.blocks <- function(X.melt, blocks, permutes) {
+  for(b in blocks){
+    X.melt[b,c(derivnames, "w")] = 0
+    for(j in 1:d){
+      which.block = which(permutes[,j]==b)
+      
+      X.melt[which.block, derivnames[j]] = 0
+      X.melt[which.block, "w"] = sum(X.melt[which.block, derivnames])
+    }
+  }
+  return(X.melt)
+}
+
+# Coerce Block Function
+"This function coerces specific cells to be a specific block, 0 or 1, over time. 
+This is useful in case you were interested in what would happen if there was an 
+infinite particle source, and infinite antiparticle sink, or a block that 
+oscillates between the two over time, or a block that probabilistically 
+oscillates between the two over time.
+
+This does not deny any ingoing or outgoing switches, as that would be 
+counterproductive."
+
+
+# Collapse Potential Switches
+"This function inverts all blocks in a list of sampled switches. As a reminder, 
+inversion occur because a particle-antiparticle pair switched, even if we do not 
+know which ones switched for certain.
+
+We can actually tell which blocks make the switch due to the fact that the list 
+is composed of ordered pairs. Thus we can modify the time 0 index of blocks in 
+order to keep track."
+
+collapse.switches <- function(X.melt, collapsed.switches) {
+  X.melt[collapsed.switches,"phi"] = !X.melt[collapsed.switches,"phi"]
+  return(X.melt)
+}
+
+# Asynchronous Transition Function
+"The single-step transition function is a function that randomly transitions
+the system from one state to another. It handles switches by sampling blocks, 
+then sampling switches within that block unless there is only one.
+
+When a switch between two blocks is made, we need to disable all ingoing and 
+outgoing switches where possible. It will add the switched blocks to a list that 
+will be outputted."
+
+
+
+q = function(X, bounded = TRUE) {
+  X.dim = dim(X)
+}
+```
+
+```{r}
+simulation <- function(X, nsims = 5, walled=FALSE) {
+  X.melt = melt.system(X)
+  permutes = prep.Delta(X.melt)
+  X.melt = Delta(X.melt, permutes)
+  X.melt = Weight(X.melt)
+  X.history = as.data.frame(X.melt)
+
+  
+
+  # switch.history <<- list(); colnames(switch.history) = as.character(1:nsims)
+  # negated.history = list(as.character(1:nsims))
+  
+  for(i in 1:nsims){
+    potential.switches = which(X.melt[,"w"] > 0)
+    initial.switches = potential.switches
+    collapsed.switches = c()
+    continue.logic = (length(potential.switches)>0) & !all(X.melt[,"w"] == 0)
+    while(continue.logic) {
+      sampled.switch = sample.switch(X.melt, potential.switches, permutes)
+      collapsed.switches = c(collapsed.switches, sampled.switch)
+      X.melt = remove.blocks(X.melt, sampled.switch, permutes)
+      potential.switches = potential.switches[!(potential.switches %in% collapsed.switches)]
+      continue.logic = (length(potential.switches)>0) & !all(X.melt[,"w"] == 0)
+    }
+    X.melt = collapse.switches(X.melt, collapsed.switches)
+    X.melt = Delta(X.melt, permutes)
+    X.melt = Weight(X.melt)
+    X.melt[,"t"] = X.melt[,"t"]+1
+    X.history = rbind(X.history, as.data.frame(X.melt))
+    # switch.history[as.character(i)] <<- collapsed.switches
+
+    
+    # negated = !(initial.switches %in% collapsed.switches)
+    # negated.blocks = initial.switches[negated]
+    # negated.history[as.character(i)] <<- negated.blocks
+  } 
+  
+  return(X.history)
+}
+
+start.time = Sys.time()
+X.test <- simulation(X, nsims)
+end.time = Sys.time()
+```
+
+```{r}
+# Test for Consistency
+"We can check that there is always the same amount of blocks in the system"
+for(i in 0:nsims){
+  print(sum(X.test[which(X.test[,"t"]==i),"phi"]))
+}
+```
+
+```{r}
+# Melt and Cast a Test Tensor
+X.3D = array(1, c(5,5,5))
+X.3D.casted = cast(melt(X.3D), X1 ~ X2 ~ X3, value = "value")
+# X.3D.casted
+```
+
+```{r}
+# Cast System History into Tensor
+X.tocast = X.test[,c(dimnames, "phi", "t")]
+cast.formula = as.formula(paste(c(dimnames, "t"), collapse = "~"))
+X.cast = cast(X.tocast,  cast.formula, value = "phi")
+# X.cast
+```
+
+```{r}
+# MPRW 2D Plot
+"This code plots the end state of the system."
+plt2 = ggplot(X.test[(X.test[,"t"]==nsims),], aes(x=X1, y=X2, fill=phi)) + geom_tile() + coord_fixed() + scale_fill_viridis_b()
+plt2
+```
+
+```{r}
+# 2x2 Checker
+"This code checks the distribution of 2x2 shapes across the end of the simulation. If we see behavior that does not match independent Bernoulli distributions for each tile, we have interesting behavior. While obvious that cells are globally dependent upon each other, we should look deeper at this distribution."
+
+X.last = X.cast[,,(nsims+1)]
+shape1 = array(c(1,0,0,1), c(2,2))
+shape1.count = 0
+
+for(i in 1:(dims[1]-1)){
+  for(j in 1:(dims[2]-1)){
+  X.2x2 = X.last[i:(i+1), j:(j+1)]
+  shape1.count = shape1.count + all(X.2x2 == shape1)
+  shape1.count = shape1.count + all(X.2x2 != shape1)
+}
+}
+
+shape2 = array(c(1,0,1,0), c(2,2))
+shape2.count = 0
+for(i in 1:(dims[1]-1)){
+  for(j in 1:(dims[2]-1)){
+  X.2x2 = X.last[i:(i+1), j:(j+1)]
+  shape2.count = shape2.count + all(X.2x2 == shape2)
+  shape2.count = shape2.count + all(X.2x2 != shape2)
+}
+}
+
+shape3 = array(c(1,1,0,0), c(2,2))
+shape3.count = 0
+for(i in 1:(dims[1]-1)){
+  for(j in 1:(dims[2]-1)){
+  X.2x2 = X.last[i:(i+1), j:(j+1)]
+  shape3.count = shape3.count + all(X.2x2 == shape3)
+  shape3.count = shape3.count + all(X.2x2 != shape3)
+}
+}
+
+shape4 = array(c(0,0,0,0), c(2,2))
+shape4.count = 0
+for(i in 1:(dims[1]-1)){
+  for(j in 1:(dims[2]-1)){
+  X.2x2 = X.last[i:(i+1), j:(j+1)]
+  shape4.count = shape4.count + all(X.2x2 == shape4)
+  shape4.count = shape4.count + all(X.2x2 != shape4)
+}
+}
+
+shape1.count
+shape2.count
+shape3.count
+shape4.count
+```
+
+```{r}
+# 2x2 Checker
+"This code checks the distribution of 2x2 shapes across the first state of the simulation."
+
+shape1 = array(c(1,0,0,1), c(2,2))
+shape1.count = 0
+X.first = X.cast[,,1]
+for(i in 1:(dims[1]-1)){
+  for(j in 1:(dims[2]-1)){
+  X.2x2 = X.first[i:(i+1), j:(j+1)]
+  shape1.count = shape1.count + all(X.2x2 == shape1)
+  shape1.count = shape1.count + all(X.2x2 != shape1)
+}
+}
+
+shape2 = array(c(1,0,1,0), c(2,2))
+shape2.count = 0
+for(i in 1:(dims[1]-1)){
+  for(j in 1:(dims[2]-1)){
+  X.2x2 = X.first[i:(i+1), j:(j+1)]
+  shape2.count = shape2.count + all(X.2x2 == shape2)
+  shape2.count = shape2.count + all(X.2x2 != shape2)
+}
+}
+
+shape3 = array(c(1,1,0,0), c(2,2))
+shape3.count = 0
+for(i in 1:(dims[1]-1)){
+  for(j in 1:(dims[2]-1)){
+  X.2x2 = X.first[i:(i+1), j:(j+1)]
+  shape3.count = shape3.count + all(X.2x2 == shape3)
+  shape3.count = shape3.count + all(X.2x2 != shape3)
+}
+}
+
+shape4 = array(c(0,0,0,0), c(2,2))
+shape4.count = 0
+for(i in 1:(dims[1]-1)){
+  for(j in 1:(dims[2]-1)){
+  X.2x2 = X.first[i:(i+1), j:(j+1)]
+  shape4.count = shape4.count + all(X.2x2 == shape4)
+  shape4.count = shape4.count + all(X.2x2 != shape4)
+}
+}
+
+shape1.count
+shape2.count
+shape3.count
+shape4.count
+```
+
+```{r, eval=FALSE}
+image(X.first)
+image(X.last)
+image(X.first-X.last)
+
+image(Re(fft(X.first)))
+image(Im(fft(X.first)))
+image(Re(fft(X.last)))
+image(Im(fft(X.last)))
+
+image(Im(fft(X.first)) - Im(fft(X.last)))
+
+# Uniform Frequency Distribution
+image(abs(Im(fft(X.first))))
+image(abs(Im(fft(X.first)))^2)
+
+# Gaussian Frequency Distribution?
+image(abs(Im(fft(X.last))))
+image(abs(Im(fft(X.last)))^2)
+
+# Lowest Possible Frequency
+X.lowfreq <- array(0, dim = c(dims))
+X.lowfreq[1:50,] = 1
+image(abs(Im(fft(X.lowfreq))))
+image(abs(Im(fft(X.lowfreq)))^2)
+
+
+X.first.df <- X.test[X.test$t==1,]
+X.last.df <- X.test[X.test$t==nsims,]
+
+X.first.FFT = melt(Im(fft(X.first)))
+X.last.FFT = melt(Im(fft(X.last)))
+
+ggplot(X.first.FFT, aes(x=X1, y=X2, fill=value)) + geom_tile() + coord_fixed() + scale_fill_viridis_c()
+ggplot(X.last.FFT, aes(x=X1, y=X2, fill=value)) + geom_tile() + coord_fixed() + scale_fill_viridis_c()
+
+ggplot(X.first.FFT, aes(x=X1, y=X2, fill=abs(value))) + geom_tile() + coord_fixed() + scale_fill_viridis_c()
+ggplot(X.last.FFT, aes(x=X1, y=X2, fill=abs(value))) + geom_tile() + coord_fixed() + scale_fill_viridis_c()
+
+ggplot(X.first.FFT, aes(x=X1, y=X2, fill=abs(value)^2)) + geom_tile() + coord_fixed() + scale_fill_viridis_c()
+ggplot(X.last.FFT, aes(x=X1, y=X2, fill=abs(value)^2)) + geom_tile() + coord_fixed() + scale_fill_viridis_c()
+```
+
+```{r}
+# MPRW 2D Animation
+"This code takes the history of a 2D system and makes an animation for it."
+MPRW <- ggplot(X.test, aes(x=X1, y=X2, fill=phi)) + geom_tile() + coord_fixed() + 
+  scale_fill_viridis_b() + transition_states(t, .1, .1) + ease_aes('linear')
+
+anim_save("MPRW 100x100 100 sims White to Brown.gif", MPRW)
+```
+
+```{r, eval=FALSE}
+# MPRW 3D Animation
+"This code creates a 3D cube of the history of the 2D system with time as the 
+z-axis. It runs extremely slowly given that it has a total of 100x100x10 spheres 
+it has to render.
+
+A 3D animation for a 3D system would need to be extremely constrained given that 
+we are working with a personal computer most of the time."
+plot3d( X.test[,"X1"], X.test[,"X2"], X.test[,"t"], col = X.test[,"phi"]+1, type = "s", radius = .2 )
+```
