@@ -12,5 +12,3 @@ While the formal algorithm description is necessary, I would argue that the gif 
 ![Alt Text](https://github.com/calmendares1/colliding-random-walks/blob/main/MPRW%20100x100%20100%20sims%2050-50%20White%20to%20Brown%20noloop.gif)
 
 The Rmd files contain detailed comments for each and every single function and section as to hypothesis, code intention, and execution.
-
-Apologies for the disorganization of the latest version of the file. It was originally constructed as a "do it all" kind of Rmd file. It suffers from a lot of bloat.
