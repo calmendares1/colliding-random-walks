@@ -5,6 +5,8 @@ A repository for multiple particles colliding random walks, where 1s and 0s are 
 
 ![Alt Text](https://github.com/calmendares1/colliding-random-walks/blob/main/MPRW%20110x110%20200%20sims.gif)
 
+Animated is a 110x110 system with particles and antiparticles mixing over 200 time steps. The code generalizes random walks to any number of particles in any number of dimensions, but rendering an animation only works in 2D. Empty space is expressed through Boolean duality. Since particles and antiparticles are treated similarly, negating inputs negates outputs. A single particle in empty space (or a sea of antiparticles) is equivalent to a bounded random walk.
+
 The Rmd files require certain R packages to render the MPRWs, but only the "reshape2" package is needed in order to run the simulation. I recommend exporting to csv files or *recoding in another programming language*. The benefit of R is rapid prototyping, the downside is that generalization is slow. See the attached preprint research paper "Multiple particles colliding random walks" for a more detailed analysis of colliding random walks.
 
 
