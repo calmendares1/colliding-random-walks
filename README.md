@@ -1,5 +1,5 @@
 # colliding-random-walks
-A repository for multiple particles colliding random walks, where 1s and 0s are the same. Stochastic binary diffusion equation.
+A repository for multiple particles colliding random walks, where 1s and 0s are the same. It simulates the diffusion of binary particles as a stochastic process.
 
 [![DOI](https://zenodo.org/badge/661829288.svg)](https://zenodo.org/badge/latestdoi/661829288)
 
@@ -11,7 +11,11 @@ A system of size $N$ with $k$ particles and $n-k$ antiparticles has ${N} \choose
 
 The Rmd files require certain R packages to render the MPRWs, but only the "reshape2" package is needed in order to run the simulation. I recommend exporting to csv files or *recoding in another programming language*. The benefit of R is rapid prototyping, the downside is that generalization is slow. See the attached preprint research paper "Multiple particles colliding random walks" for a more detailed analysis of colliding random walks.
 
+The most unusual property of colliding random walk simulations is the nonuniform frequency of states. The stationary distribution of a colliding random walks simulation with a single particle (in an antiparticle box) is the uniform distribution. However, this is clearly not the case for colliding random walks.
 
+![Alt Text](https://github.com/calmendares1/colliding-random-walks/blob/main/4x4%20Exit%20Counter%2C%20100%20sims%20per%20state.png)
+
+The plot shows the number of unique incident states out of 1000 simulations of a 4x4 system with 12870 possible states. Although 1000 simulations are not nearly enough to cover all states leading into an incident state, it is clear that the most common state is the checkerboard state.
 
 The Rmd files contain detailed comments for each and every single function and section as to hypothesis, code intention, and execution.
 
