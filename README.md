@@ -15,7 +15,7 @@ The most unusual property of colliding random walk simulations is the nonuniform
 
 ![Alt Text](https://github.com/calmendares1/colliding-random-walks/blob/main/4x4%20Exit%20Counter%2C%20100%20sims%20per%20state.png)
 
-The plot shows the number of unique incident states out of 1000 simulations of a 4x4 system with 12870 possible states. Although 1000 simulations are not nearly enough to cover all states leading into an incident state, it is clear that the most common state is the checkerboard state.
+The plot shows the number of unique incident states out of 1000 simulations of a 4x4 system with 12870 possible states. Although 1000 simulations are not nearly enough to cover all states leading into an incident state, it is clear that the some states are preferred more than others. The *most incident* state is the checkerboard and its inversion.
 
 The Rmd files contain detailed comments for each and every single function and section as to hypothesis, code intention, and execution.
 
