@@ -15,7 +15,25 @@ The most unusual property of colliding random walk simulations is the nonuniform
 
 ![Alt Text](https://github.com/calmendares1/colliding-random-walks/blob/main/4x4%20Exit%20Counter%2C%20100%20sims%20per%20state.png)
 
+
 The plot shows the number of incoming states out of 1000 simulations of a 4x4 system with 12870 possible states. Although 1000 simulations are not nearly enough to cover all states leading into a incoming state, it is clear that some states are preferred more than others. The *most incoming* state is the checkerboard and its inversion.
+
+Below is a comparison of a 34x34 system with various animations
+
+
+# Boolean Diffusion (34x34)
+https://github.com/calmendares1/colliding-random-walks/assets/57421056/5a1d88a1-4537-4417-8ab5-21e78c5767e9
+
+# Boolean Diffusion Smoothed
+https://github.com/calmendares1/colliding-random-walks/assets/57421056/8acb02c5-5c83-4e70-abf7-d7d9facde4c9
+
+# Boolean Diffusion, Boundary Emphasized
+https://github.com/calmendares1/colliding-random-walks/assets/57421056/46541365-bb0c-4a60-94d5-1363d36038ec
+
+# FFT of Boolean Diffusion
+https://github.com/calmendares1/colliding-random-walks/assets/57421056/a233b300-79e4-4ea4-ba36-adde97a7f984
+
+
 
 The Rmd files contain detailed comments for each and every single function and section as to hypothesis, code intention, and execution.
 
